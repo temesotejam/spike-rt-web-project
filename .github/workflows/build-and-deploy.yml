@@ -1,0 +1,194 @@
+name: Build SPIKE-RT and deploy Pages
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "app/**"
+      - "web/**"
+      - ".github/workflows/build-and-deploy.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  APP_NAME: myapp
+  APP_DIR: user_app
+  SPIKE_RT_REF: 62a2824e4b513aaf65fde4670ccbc5620e1733a6
+  SPIKE_RT_IMAGE: ghcr.io/spike-rt/spike-rt:rich
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout this repository
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Checkout SPIKE-RT read-only
+        uses: actions/checkout@v6
+        with:
+          repository: spike-rt/spike-rt
+          ref: ${{ env.SPIKE_RT_REF }}
+          path: spike-rt
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Disable push to SPIKE-RT remote
+        shell: bash
+        run: |
+          git -C spike-rt remote set-url --push origin DISABLED
+          git -C spike-rt remote -v
+
+      - name: Copy application into SPIKE-RT tree
+        shell: bash
+        run: |
+          rm -rf spike-rt/${APP_DIR}
+          mkdir -p spike-rt/${APP_DIR}
+          cp -a app/. spike-rt/${APP_DIR}/
+
+      - name: Build firmware
+        shell: bash
+        run: |
+          set -o pipefail
+
+          docker pull "${SPIKE_RT_IMAGE}"
+
+          docker run --rm \
+            -e APP_NAME="${APP_NAME}" \
+            -e APP_DIR="${APP_DIR}" \
+            -v "${GITHUB_WORKSPACE}/spike-rt:/work" \
+            -w /work \
+            "${SPIKE_RT_IMAGE}" \
+            bash -lc '
+              set -euxo pipefail
+
+              mkdir -p build/obj-primehub_kernel
+              cd build/obj-primehub_kernel
+
+              ../../asp3/configure.rb \
+                -T primehub_gcc \
+                -f \
+                -m ../../common/kernel.mk
+
+              make -j2 libkernel.a
+              cd ../..
+
+              mkdir -p "build/obj-primehub_${APP_NAME}"
+              cd "build/obj-primehub_${APP_NAME}"
+
+              ../../asp3/configure.rb \
+                -T primehub_gcc \
+                -L ../obj-primehub_kernel \
+                -a "../../${APP_DIR}/" \
+                -A "${APP_NAME}" \
+                -m ../../common/app.mk
+
+              rm -f asp asp.bin
+              make -j2
+
+              test -s asp.bin
+              sha256sum asp.bin > asp.bin.sha256
+              arm-none-eabi-size asp > size.txt
+            ' 2>&1 | tee build.log
+
+      - name: Prepare Pages site
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          rm -rf site
+          mkdir -p site/firmware
+          cp -a web/. site/
+
+          BUILD_DIR="spike-rt/build/obj-primehub_${APP_NAME}"
+          cp "${BUILD_DIR}/asp.bin" site/firmware/asp.bin
+          cp "${BUILD_DIR}/asp.bin.sha256" site/firmware/asp.bin.sha256
+          cp "${BUILD_DIR}/size.txt" site/firmware/size.txt
+          cp build.log site/firmware/build.log
+
+          export FIRMWARE_SHA256
+          export FIRMWARE_SIZE
+          export BUILT_AT
+          FIRMWARE_SHA256="$(cut -d ' ' -f 1 "${BUILD_DIR}/asp.bin.sha256")"
+          FIRMWARE_SIZE="$(stat -c '%s' "${BUILD_DIR}/asp.bin")"
+          BUILT_AT="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          manifest = {
+              "file": "asp.bin",
+              "loadAddress": "0x08008000",
+              "maxBytes": 992 * 1024,
+              "size": int(os.environ["FIRMWARE_SIZE"]),
+              "sha256": os.environ["FIRMWARE_SHA256"],
+              "sourceCommit": os.environ["GITHUB_SHA"],
+              "spikeRtCommit": os.environ["SPIKE_RT_REF"],
+              "runNumber": os.environ["GITHUB_RUN_NUMBER"],
+              "runId": os.environ["GITHUB_RUN_ID"],
+              "builtAt": os.environ["BUILT_AT"],
+              "repository": os.environ["GITHUB_REPOSITORY"],
+          }
+
+          Path("site/firmware/manifest.json").write_text(
+              json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: spike-rt-firmware-${{ github.run_number }}
+          path: |
+            site/firmware/asp.bin
+            site/firmware/asp.bin.sha256
+            site/firmware/size.txt
+            site/firmware/manifest.json
+            site/firmware/build.log
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Configure Pages
+        if: github.ref == 'refs/heads/main'
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+
+    permissions:
+      pages: write
+      id-token: write
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
