@@ -2,7 +2,6 @@
 /*
  * Copyright (c) 2022 Embedded and Real-Time Systems Laboratory,
  *                    Graduate School of Information Science, Nagoya Univ., JAPAN
- *
  */
 
 #include <t_syslog.h>
