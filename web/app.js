@@ -1,4 +1,14 @@
-const MAX_FIRMWARE_BYTES = 992 * 1024;
+import {
+  connectSpikeDfu,
+  isWebUsbAvailable,
+  SPIKE_DFU_PRODUCT_ID,
+  SPIKE_DFU_VENDOR_ID,
+} from "./dfu.js";
+import {
+  flashSpikeRtFirmware,
+  SPIKE_RT_LOAD_ADDRESS,
+  SPIKE_RT_MAX_BYTES,
+} from "./dfuse.js";
 
 const elements = {
   loadLatest: document.querySelector("#load-latest"),
@@ -11,10 +21,29 @@ const elements = {
   sourceCommit: document.querySelector("#source-commit"),
   spikeRtCommit: document.querySelector("#spike-rt-commit"),
   loadAddress: document.querySelector("#load-address"),
+  browserStatus: document.querySelector("#browser-status"),
+  deviceStatus: document.querySelector("#device-status"),
+  transferSize: document.querySelector("#transfer-size"),
+  connect: document.querySelector("#connect"),
+  disconnect: document.querySelector("#disconnect"),
+  flash: document.querySelector("#flash"),
+  confirmSafety: document.querySelector("#confirm-safety"),
+  progress: document.querySelector("#progress"),
+  progressLabel: document.querySelector("#progress-label"),
   log: document.querySelector("#log"),
 };
 
 let loadedFirmware = null;
+let dfuDevice = null;
+let busy = false;
+
+const PHASE_RANGES = Object.freeze({
+  prepare: [0, 5, "準備中"],
+  erase: [5, 30, "フラッシュ消去中"],
+  write: [30, 75, "書き込み中"],
+  verify: [75, 95, "読み戻し検証中"],
+  manifest: [95, 100, "再起動中"],
+});
 
 function appendLog(message) {
   const timestamp = new Date().toLocaleTimeString("ja-JP");
@@ -23,7 +52,11 @@ function appendLog(message) {
 }
 
 function formatBytes(bytes) {
-  return new Intl.NumberFormat("ja-JP").format(bytes) + " bytes";
+  return `${new Intl.NumberFormat("ja-JP").format(bytes)} bytes`;
+}
+
+function hex(value, width = 4) {
+  return `0x${value.toString(16).padStart(width, "0")}`;
 }
 
 async function sha256Hex(arrayBuffer) {
@@ -33,65 +66,143 @@ async function sha256Hex(arrayBuffer) {
     .join("");
 }
 
-function validateFirmware(arrayBuffer) {
-  if (arrayBuffer.byteLength === 0) throw new Error("空のファイルは使用できません。");
-  if (arrayBuffer.byteLength > MAX_FIRMWARE_BYTES) {
-    throw new Error(`ファイルが大きすぎます。上限は${formatBytes(MAX_FIRMWARE_BYTES)}です。`);
+function validateFirmware(arrayBuffer, manifest = null) {
+  if (!(arrayBuffer instanceof ArrayBuffer) || arrayBuffer.byteLength === 0) {
+    throw new Error("空のファイルは使用できません。");
+  }
+  if (arrayBuffer.byteLength > SPIKE_RT_MAX_BYTES) {
+    throw new Error(
+      `ファイルが大きすぎます。上限は${formatBytes(SPIKE_RT_MAX_BYTES)}です。`,
+    );
+  }
+  if (
+    manifest?.loadAddress &&
+    Number.parseInt(manifest.loadAddress, 16) !== SPIKE_RT_LOAD_ADDRESS
+  ) {
+    throw new Error(
+      `manifest.jsonの書き込み先が不正です: ${manifest.loadAddress}`,
+    );
   }
 }
 
+function updateControls() {
+  const webUsbReady = isWebUsbAvailable();
+  elements.connect.disabled = busy || !webUsbReady || Boolean(dfuDevice);
+  elements.disconnect.disabled = busy || !dfuDevice;
+  elements.download.disabled = busy || !loadedFirmware;
+  elements.flash.disabled =
+    busy ||
+    !dfuDevice ||
+    !loadedFirmware ||
+    !elements.confirmSafety.checked;
+  elements.loadLatest.disabled = busy;
+  elements.localFile.disabled = busy;
+  elements.confirmSafety.disabled = busy;
+}
+
+function setBusy(value) {
+  busy = value;
+  updateControls();
+}
+
+function setProgress(phase, done, total) {
+  const [start, end, label] = PHASE_RANGES[phase] ?? [0, 100, phase];
+  const ratio = total > 0 ? Math.min(1, Math.max(0, done / total)) : 0;
+  const percent = start + (end - start) * ratio;
+  elements.progress.value = percent;
+  elements.progressLabel.textContent = `${label}: ${Math.round(percent)}%`;
+}
+
+function clearConnectedDevice(message = "未接続") {
+  dfuDevice = null;
+  elements.deviceStatus.textContent = message;
+  elements.deviceStatus.className = "";
+  elements.transferSize.textContent = "—";
+  updateControls();
+}
+
 async function setFirmware({ name, arrayBuffer, manifest = null }) {
-  validateFirmware(arrayBuffer);
+  validateFirmware(arrayBuffer, manifest);
   const sha256 = await sha256Hex(arrayBuffer);
-  if (manifest?.sha256 && manifest.sha256.toLowerCase() !== sha256.toLowerCase()) {
+  if (
+    manifest?.sha256 &&
+    manifest.sha256.toLowerCase() !== sha256.toLowerCase()
+  ) {
     throw new Error("manifest.jsonのSHA-256とasp.binが一致しません。");
   }
 
   loadedFirmware = { name, arrayBuffer, sha256, manifest };
   elements.firmwareStatus.textContent = "読込済み";
+  elements.firmwareStatus.className = "status-good";
   elements.firmwareName.textContent = name;
   elements.firmwareSize.textContent = formatBytes(arrayBuffer.byteLength);
   elements.firmwareSha.textContent = sha256;
   elements.sourceCommit.textContent = manifest?.sourceCommit ?? "ローカルファイル";
   elements.spikeRtCommit.textContent = manifest?.spikeRtCommit ?? "—";
-  elements.loadAddress.textContent = manifest?.loadAddress ?? "0x08008000";
-  elements.download.disabled = false;
-  appendLog(`${name}を読み込みました。`);
+  elements.loadAddress.textContent = manifest?.loadAddress ?? hex(SPIKE_RT_LOAD_ADDRESS, 8);
+  appendLog(`${name}を読み込み、SHA-256を確認しました。`);
+  updateControls();
 }
 
 async function loadLatestFirmware() {
-  elements.loadLatest.disabled = true;
+  setBusy(true);
   elements.firmwareStatus.textContent = "取得中";
+  elements.firmwareStatus.className = "";
   try {
-    const manifestResponse = await fetch(`./firmware/manifest.json?t=${Date.now()}`, { cache: "no-store" });
-    if (!manifestResponse.ok) throw new Error(`manifest.jsonの取得に失敗しました (${manifestResponse.status})。`);
+    const manifestResponse = await fetch(
+      `./firmware/manifest.json?t=${Date.now()}`,
+      { cache: "no-store" },
+    );
+    if (!manifestResponse.ok) {
+      throw new Error(
+        `manifest.jsonの取得に失敗しました (${manifestResponse.status})。`,
+      );
+    }
     const manifest = await manifestResponse.json();
-    const firmwareUrl = new URL(`./firmware/${manifest.file}`, window.location.href);
+    const firmwareUrl = new URL(
+      `./firmware/${manifest.file}`,
+      window.location.href,
+    );
     firmwareUrl.searchParams.set("commit", manifest.sourceCommit);
     const firmwareResponse = await fetch(firmwareUrl, { cache: "no-store" });
-    if (!firmwareResponse.ok) throw new Error(`asp.binの取得に失敗しました (${firmwareResponse.status})。`);
-    await setFirmware({ name: manifest.file, arrayBuffer: await firmwareResponse.arrayBuffer(), manifest });
+    if (!firmwareResponse.ok) {
+      throw new Error(
+        `asp.binの取得に失敗しました (${firmwareResponse.status})。`,
+      );
+    }
+    await setFirmware({
+      name: manifest.file,
+      arrayBuffer: await firmwareResponse.arrayBuffer(),
+      manifest,
+    });
   } catch (error) {
     elements.firmwareStatus.textContent = "失敗";
+    elements.firmwareStatus.className = "status-error";
     appendLog(error instanceof Error ? error.message : String(error));
   } finally {
-    elements.loadLatest.disabled = false;
+    setBusy(false);
   }
 }
 
 async function loadLocalFirmware(file) {
   if (!file) return;
+  setBusy(true);
   try {
     await setFirmware({ name: file.name, arrayBuffer: await file.arrayBuffer() });
   } catch (error) {
     elements.firmwareStatus.textContent = "失敗";
+    elements.firmwareStatus.className = "status-error";
     appendLog(error instanceof Error ? error.message : String(error));
+  } finally {
+    setBusy(false);
   }
 }
 
 function downloadFirmware() {
   if (!loadedFirmware) return;
-  const blob = new Blob([loadedFirmware.arrayBuffer], { type: "application/octet-stream" });
+  const blob = new Blob([loadedFirmware.arrayBuffer], {
+    type: "application/octet-stream",
+  });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
@@ -100,10 +211,113 @@ function downloadFirmware() {
   URL.revokeObjectURL(url);
 }
 
+async function connectHub() {
+  setBusy(true);
+  elements.deviceStatus.textContent = "接続中";
+  elements.deviceStatus.className = "";
+  try {
+    dfuDevice = await connectSpikeDfu({ log: appendLog });
+    elements.deviceStatus.textContent = `${dfuDevice.label} 接続済み`;
+    elements.deviceStatus.className = "status-good";
+    elements.transferSize.textContent = formatBytes(dfuDevice.transferSize);
+    appendLog(
+      `接続成功: VID=${hex(SPIKE_DFU_VENDOR_ID)}, PID=${hex(SPIKE_DFU_PRODUCT_ID)}, transfer=${dfuDevice.transferSize}`,
+    );
+  } catch (error) {
+    clearConnectedDevice("接続失敗");
+    elements.deviceStatus.className = "status-error";
+    appendLog(error instanceof Error ? error.message : String(error));
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function disconnectHub() {
+  if (!dfuDevice) return;
+  setBusy(true);
+  const current = dfuDevice;
+  try {
+    await current.close();
+    appendLog("Hubとの接続を解除しました。");
+  } finally {
+    clearConnectedDevice();
+    setBusy(false);
+  }
+}
+
+async function flashFirmware() {
+  if (!dfuDevice || !loadedFirmware) return;
+  if (!elements.confirmSafety.checked) {
+    appendLog("安全確認のチェックを入れてください。");
+    return;
+  }
+
+  const confirmed = window.confirm(
+    `${loadedFirmware.name} (${formatBytes(loadedFirmware.arrayBuffer.byteLength)})を` +
+      ` ${hex(SPIKE_RT_LOAD_ADDRESS, 8)}へ書き込みます。\n\n` +
+      "処理中はUSBケーブルを抜かないでください。続行しますか？",
+  );
+  if (!confirmed) return;
+
+  setBusy(true);
+  elements.progress.value = 0;
+  elements.progressLabel.textContent = "書き込みを開始します";
+  appendLog("書き込み処理を開始します。");
+
+  try {
+    await flashSpikeRtFirmware(dfuDevice, loadedFirmware.arrayBuffer, {
+      log: appendLog,
+      onProgress: setProgress,
+    });
+    elements.progress.value = 100;
+    elements.progressLabel.textContent = "完了: 100%";
+    appendLog("書き込み・読み戻し検証・再起動要求が完了しました。");
+    clearConnectedDevice("再起動済み（USB切断）");
+  } catch (error) {
+    elements.progressLabel.textContent = "失敗";
+    appendLog(`書き込み失敗: ${error instanceof Error ? error.message : String(error)}`);
+    try {
+      await dfuDevice?.ensureIdle();
+    } catch (recoveryError) {
+      appendLog(
+        `DFU状態の復旧に失敗しました。HubをDFUモードで接続し直してください: ${
+          recoveryError instanceof Error ? recoveryError.message : String(recoveryError)
+        }`,
+      );
+    }
+  } finally {
+    setBusy(false);
+  }
+}
+
 elements.loadLatest.addEventListener("click", loadLatestFirmware);
-elements.localFile.addEventListener("change", (event) => loadLocalFirmware(event.target.files[0]));
+elements.localFile.addEventListener("change", (event) =>
+  loadLocalFirmware(event.target.files[0]),
+);
 elements.download.addEventListener("click", downloadFirmware);
+elements.connect.addEventListener("click", connectHub);
+elements.disconnect.addEventListener("click", disconnectHub);
+elements.flash.addEventListener("click", flashFirmware);
+elements.confirmSafety.addEventListener("change", updateControls);
 
-if (!window.isSecureContext) appendLog("HTTPSではないため、将来WebUSBを利用できません。");
+if (navigator.usb) {
+  navigator.usb.addEventListener("disconnect", (event) => {
+    if (dfuDevice?.usbDevice === event.device) {
+      appendLog("HubがUSBから切断されました。");
+      clearConnectedDevice("切断済み");
+    }
+  });
+}
 
-// GitHub Pagesを有効化した後の初回デプロイを起動するための変更です。
+if (isWebUsbAvailable()) {
+  elements.browserStatus.textContent = "利用可能（Chrome / Edge）";
+  elements.browserStatus.className = "status-good";
+} else {
+  elements.browserStatus.textContent = "利用不可";
+  elements.browserStatus.className = "status-error";
+  appendLog(
+    "WebUSBを利用できません。HTTPS上のChromeまたはEdgeで開いてください。",
+  );
+}
+
+updateControls();
