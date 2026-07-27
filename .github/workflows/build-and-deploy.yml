@@ -21,12 +21,12 @@ env:
   APP_NAME: myapp
   APP_DIR: user_app
   SPIKE_RT_REF: v0.2.0
-  SPIKE_RT_IMAGE: ghcr.io/spike-rt/spike-rt:v0.2.0-rich
+  SPIKE_RT_IMAGE: spike-rt-builder:v0.2.0-slim
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 40
 
     permissions:
       contents: read
@@ -59,12 +59,19 @@ jobs:
           mkdir -p spike-rt/${APP_DIR}
           cp -a app/. spike-rt/${APP_DIR}/
 
+      - name: Build pinned SPIKE-RT builder image
+        shell: bash
+        run: |
+          set -euxo pipefail
+          docker build \
+            --file spike-rt/tools/docker/slim.dockerfile \
+            --tag "${SPIKE_RT_IMAGE}" \
+            spike-rt/tools/docker
+
       - name: Build firmware
         shell: bash
         run: |
           set -o pipefail
-
-          docker pull "${SPIKE_RT_IMAGE}"
 
           docker run --rm \
             -e APP_NAME="${APP_NAME}" \
