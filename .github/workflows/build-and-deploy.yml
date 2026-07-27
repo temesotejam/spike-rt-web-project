@@ -26,7 +26,7 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
 
     permissions:
       contents: read
@@ -75,6 +75,10 @@ jobs:
             bash -lc '
               set -euxo pipefail
 
+              # GitHub Actionsのマウント先をGitの安全な作業場所として許可する。
+              git config --global --add safe.directory "*"
+
+              echo "=== Configure kernel ==="
               mkdir -p build/obj-primehub_kernel
               cd build/obj-primehub_kernel
 
@@ -83,9 +87,11 @@ jobs:
                 -f \
                 -m ../../common/kernel.mk
 
+              echo "=== Build kernel ==="
               make -j2 libkernel.a
               cd ../..
 
+              echo "=== Configure application ==="
               mkdir -p "build/obj-primehub_${APP_NAME}"
               cd "build/obj-primehub_${APP_NAME}"
 
@@ -96,13 +102,24 @@ jobs:
                 -A "${APP_NAME}" \
                 -m ../../common/app.mk
 
+              echo "=== Build application ==="
               rm -f asp asp.bin
               make -j2
 
+              echo "=== Validate output ==="
               test -s asp.bin
               sha256sum asp.bin > asp.bin.sha256
               arm-none-eabi-size asp > size.txt
             ' 2>&1 | tee build.log
+
+      - name: Upload diagnostic build log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: spike-rt-diagnostic-log-${{ github.run_number }}
+          path: build.log
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Prepare Pages site
         shell: bash
