@@ -12,13 +12,26 @@
     <header>
       <p class="eyebrow">SPIKE-RT</p>
       <h1>Build &amp; Web Flasher</h1>
-      <p>GitHub Actionsで生成した最新版の<code>asp.bin</code>を読み込み、SPIKE Prime HubへUSB DFUで書き込みます。</p>
+      <p>複数のSPIKE-RTプログラムをGitHub Actionsで一括コンパイルし、選択した<code>asp.bin</code>をSPIKE Prime HubへUSB DFUで書き込みます。</p>
     </header>
 
     <section class="card">
-      <h2>1. ファームウェア</h2>
+      <h2>1. プログラムとファームウェア</h2>
+
+      <div class="project-picker">
+        <label for="app-select">プログラム</label>
+        <select id="app-select" disabled>
+          <option>一覧を取得中...</option>
+        </select>
+        <span id="catalog-status" class="muted">catalog.jsonを確認しています</span>
+      </div>
+
+      <p id="app-description" class="app-description">—</p>
+      <p id="app-origin" class="muted">—</p>
+      <p id="app-warning" class="notice warning" hidden></p>
+
       <div class="actions">
-        <button id="load-latest" type="button">最新版を読み込む</button>
+        <button id="load-latest" type="button" disabled>選択したプログラムを読み込む</button>
         <label class="file-button">
           ローカルのasp.binを選択
           <input id="local-file" type="file" accept=".bin,application/octet-stream">
@@ -27,6 +40,7 @@
 
       <dl class="metadata">
         <div><dt>状態</dt><dd id="firmware-status">未読込</dd></div>
+        <div><dt>プログラム</dt><dd id="firmware-program">—</dd></div>
         <div><dt>ファイル</dt><dd id="firmware-name">—</dd></div>
         <div><dt>サイズ</dt><dd id="firmware-size">—</dd></div>
         <div><dt>SHA-256</dt><dd id="firmware-sha">—</dd></div>
@@ -83,7 +97,7 @@
       <progress id="progress" max="100" value="0"></progress>
       <pre id="log" aria-live="polite">準備完了</pre>
 
-      <p class="notice">このWebUSB実装はコードレビューと既存実装との照合を行っていますが、このリポジトリではまだ実機による最終確認を行っていません。最初の試験では復元可能なHubと既知の正常な<code>asp.bin</code>を使用してください。</p>
+      <p class="notice">このWebUSB実装はコードレビューと模擬DFUテストまで完了していますが、このリポジトリではまだ実機による最終確認を行っていません。最初の試験では復元可能なHubと既知の正常な<code>asp.bin</code>を使用してください。</p>
     </section>
 
     <footer>

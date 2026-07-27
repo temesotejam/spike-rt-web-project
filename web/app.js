@@ -11,10 +11,16 @@ import {
 } from "./dfuse.js";
 
 const elements = {
+  appSelect: document.querySelector("#app-select"),
+  catalogStatus: document.querySelector("#catalog-status"),
+  appDescription: document.querySelector("#app-description"),
+  appOrigin: document.querySelector("#app-origin"),
+  appWarning: document.querySelector("#app-warning"),
   loadLatest: document.querySelector("#load-latest"),
   localFile: document.querySelector("#local-file"),
   download: document.querySelector("#download"),
   firmwareStatus: document.querySelector("#firmware-status"),
+  firmwareProgram: document.querySelector("#firmware-program"),
   firmwareName: document.querySelector("#firmware-name"),
   firmwareSize: document.querySelector("#firmware-size"),
   firmwareSha: document.querySelector("#firmware-sha"),
@@ -33,6 +39,7 @@ const elements = {
   log: document.querySelector("#log"),
 };
 
+let catalogApps = [];
 let loadedFirmware = null;
 let dfuDevice = null;
 let busy = false;
@@ -57,6 +64,26 @@ function formatBytes(bytes) {
 
 function hex(value, width = 4) {
   return `0x${value.toString(16).padStart(width, "0")}`;
+}
+
+function selectedCatalogApp() {
+  return catalogApps.find((app) => app.id === elements.appSelect.value) ?? null;
+}
+
+function showSelectedApp() {
+  const app = selectedCatalogApp();
+  if (!app) {
+    elements.appDescription.textContent = "—";
+    elements.appOrigin.textContent = "—";
+    elements.appWarning.hidden = true;
+    elements.appWarning.textContent = "";
+    return;
+  }
+
+  elements.appDescription.textContent = app.description || app.name;
+  elements.appOrigin.textContent = app.origin ? `出典: ${app.origin}` : "";
+  elements.appWarning.textContent = app.warning || "";
+  elements.appWarning.hidden = !app.warning;
 }
 
 async function sha256Hex(arrayBuffer) {
@@ -87,6 +114,8 @@ function validateFirmware(arrayBuffer, manifest = null) {
 
 function updateControls() {
   const webUsbReady = isWebUsbAvailable();
+  const hasCatalog = catalogApps.length > 0;
+  elements.appSelect.disabled = busy || !hasCatalog;
   elements.connect.disabled = busy || !webUsbReady || Boolean(dfuDevice);
   elements.disconnect.disabled = busy || !dfuDevice;
   elements.download.disabled = busy || !loadedFirmware;
@@ -95,7 +124,7 @@ function updateControls() {
     !dfuDevice ||
     !loadedFirmware ||
     !elements.confirmSafety.checked;
-  elements.loadLatest.disabled = busy;
+  elements.loadLatest.disabled = busy || !hasCatalog;
   elements.localFile.disabled = busy;
   elements.confirmSafety.disabled = busy;
 }
@@ -121,7 +150,26 @@ function clearConnectedDevice(message = "未接続") {
   updateControls();
 }
 
-async function setFirmware({ name, arrayBuffer, manifest = null }) {
+function clearFirmware(message = "未読込") {
+  loadedFirmware = null;
+  elements.firmwareStatus.textContent = message;
+  elements.firmwareStatus.className = "";
+  elements.firmwareProgram.textContent = "—";
+  elements.firmwareName.textContent = "—";
+  elements.firmwareSize.textContent = "—";
+  elements.firmwareSha.textContent = "—";
+  elements.sourceCommit.textContent = "—";
+  elements.spikeRtCommit.textContent = "—";
+  elements.loadAddress.textContent = hex(SPIKE_RT_LOAD_ADDRESS, 8);
+  updateControls();
+}
+
+async function setFirmware({
+  name,
+  arrayBuffer,
+  manifest = null,
+  app = null,
+}) {
   validateFirmware(arrayBuffer, manifest);
   const sha256 = await sha256Hex(arrayBuffer);
   if (
@@ -131,49 +179,116 @@ async function setFirmware({ name, arrayBuffer, manifest = null }) {
     throw new Error("manifest.jsonのSHA-256とasp.binが一致しません。");
   }
 
-  loadedFirmware = { name, arrayBuffer, sha256, manifest };
+  const programId = manifest?.appId ?? app?.id ?? "local";
+  const programName = manifest?.appName ?? app?.name ?? "ローカルファイル";
+  loadedFirmware = {
+    name,
+    downloadName:
+      programId === "local" ? name : `${programId}-${name}`,
+    arrayBuffer,
+    sha256,
+    manifest,
+    programId,
+    programName,
+  };
+
   elements.firmwareStatus.textContent = "読込済み";
   elements.firmwareStatus.className = "status-good";
+  elements.firmwareProgram.textContent = `${programName} (${programId})`;
   elements.firmwareName.textContent = name;
   elements.firmwareSize.textContent = formatBytes(arrayBuffer.byteLength);
   elements.firmwareSha.textContent = sha256;
   elements.sourceCommit.textContent = manifest?.sourceCommit ?? "ローカルファイル";
   elements.spikeRtCommit.textContent = manifest?.spikeRtCommit ?? "—";
-  elements.loadAddress.textContent = manifest?.loadAddress ?? hex(SPIKE_RT_LOAD_ADDRESS, 8);
-  appendLog(`${name}を読み込み、SHA-256を確認しました。`);
+  elements.loadAddress.textContent =
+    manifest?.loadAddress ?? hex(SPIKE_RT_LOAD_ADDRESS, 8);
+  appendLog(`${programName}の${name}を読み込み、SHA-256を確認しました。`);
   updateControls();
 }
 
-async function loadLatestFirmware() {
-  setBusy(true);
-  elements.firmwareStatus.textContent = "取得中";
-  elements.firmwareStatus.className = "";
+async function loadCatalog() {
+  elements.catalogStatus.textContent = "一覧を取得中";
   try {
-    const manifestResponse = await fetch(
-      `./firmware/manifest.json?t=${Date.now()}`,
-      { cache: "no-store" },
-    );
+    const response = await fetch(`./firmware/catalog.json?t=${Date.now()}`, {
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      throw new Error(`catalog.jsonの取得に失敗しました (${response.status})。`);
+    }
+
+    const catalog = await response.json();
+    if (!Array.isArray(catalog.apps) || catalog.apps.length === 0) {
+      throw new Error("利用可能なプログラムがcatalog.jsonにありません。");
+    }
+
+    catalogApps = catalog.apps;
+    elements.appSelect.replaceChildren();
+    for (const app of catalogApps) {
+      const option = document.createElement("option");
+      option.value = app.id;
+      option.textContent = `${app.name} (${app.id})`;
+      elements.appSelect.append(option);
+    }
+
+    if (catalogApps.some((app) => app.id === catalog.defaultApp)) {
+      elements.appSelect.value = catalog.defaultApp;
+    }
+
+    elements.catalogStatus.textContent =
+      `${catalogApps.length}個 / SPIKE-RT ${catalog.spikeRtCommit}`;
+    elements.catalogStatus.className = "muted status-good";
+    showSelectedApp();
+    updateControls();
+    await loadSelectedFirmware();
+  } catch (error) {
+    catalogApps = [];
+    elements.catalogStatus.textContent = "一覧取得失敗";
+    elements.catalogStatus.className = "muted status-error";
+    appendLog(error instanceof Error ? error.message : String(error));
+    updateControls();
+  }
+}
+
+async function loadSelectedFirmware() {
+  const app = selectedCatalogApp();
+  if (!app) {
+    appendLog("読み込むプログラムを選択してください。");
+    return;
+  }
+
+  setBusy(true);
+  clearFirmware("取得中");
+  try {
+    const manifestUrl = new URL(`./firmware/${app.manifest}`, window.location.href);
+    manifestUrl.searchParams.set("t", Date.now().toString());
+    const manifestResponse = await fetch(manifestUrl, { cache: "no-store" });
     if (!manifestResponse.ok) {
       throw new Error(
-        `manifest.jsonの取得に失敗しました (${manifestResponse.status})。`,
+        `${app.id}のmanifest.json取得に失敗しました (${manifestResponse.status})。`,
       );
     }
+
     const manifest = await manifestResponse.json();
-    const firmwareUrl = new URL(
-      `./firmware/${manifest.file}`,
-      window.location.href,
-    );
+    if (manifest.appId !== app.id) {
+      throw new Error(
+        `catalog.jsonとmanifest.jsonのプログラムIDが一致しません (${app.id}/${manifest.appId})。`,
+      );
+    }
+
+    const firmwareUrl = new URL(manifest.file, manifestUrl);
     firmwareUrl.searchParams.set("commit", manifest.sourceCommit);
     const firmwareResponse = await fetch(firmwareUrl, { cache: "no-store" });
     if (!firmwareResponse.ok) {
       throw new Error(
-        `asp.binの取得に失敗しました (${firmwareResponse.status})。`,
+        `${app.id}のasp.bin取得に失敗しました (${firmwareResponse.status})。`,
       );
     }
+
     await setFirmware({
       name: manifest.file,
       arrayBuffer: await firmwareResponse.arrayBuffer(),
       manifest,
+      app,
     });
   } catch (error) {
     elements.firmwareStatus.textContent = "失敗";
@@ -188,7 +303,10 @@ async function loadLocalFirmware(file) {
   if (!file) return;
   setBusy(true);
   try {
-    await setFirmware({ name: file.name, arrayBuffer: await file.arrayBuffer() });
+    await setFirmware({
+      name: file.name,
+      arrayBuffer: await file.arrayBuffer(),
+    });
   } catch (error) {
     elements.firmwareStatus.textContent = "失敗";
     elements.firmwareStatus.className = "status-error";
@@ -206,7 +324,7 @@ function downloadFirmware() {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
-  anchor.download = loadedFirmware.name || "asp.bin";
+  anchor.download = loadedFirmware.downloadName || "asp.bin";
   anchor.click();
   URL.revokeObjectURL(url);
 }
@@ -253,7 +371,8 @@ async function flashFirmware() {
   }
 
   const confirmed = window.confirm(
-    `${loadedFirmware.name} (${formatBytes(loadedFirmware.arrayBuffer.byteLength)})を` +
+    `${loadedFirmware.programName} / ${loadedFirmware.name} ` +
+      `(${formatBytes(loadedFirmware.arrayBuffer.byteLength)})を` +
       ` ${hex(SPIKE_RT_LOAD_ADDRESS, 8)}へ書き込みます。\n\n` +
       "処理中はUSBケーブルを抜かないでください。続行しますか？",
   );
@@ -262,7 +381,7 @@ async function flashFirmware() {
   setBusy(true);
   elements.progress.value = 0;
   elements.progressLabel.textContent = "書き込みを開始します";
-  appendLog("書き込み処理を開始します。");
+  appendLog(`書き込み処理を開始します: ${loadedFirmware.programName}`);
 
   try {
     await flashSpikeRtFirmware(dfuDevice, loadedFirmware.arrayBuffer, {
@@ -275,13 +394,17 @@ async function flashFirmware() {
     clearConnectedDevice("再起動済み（USB切断）");
   } catch (error) {
     elements.progressLabel.textContent = "失敗";
-    appendLog(`書き込み失敗: ${error instanceof Error ? error.message : String(error)}`);
+    appendLog(
+      `書き込み失敗: ${error instanceof Error ? error.message : String(error)}`,
+    );
     try {
       await dfuDevice?.ensureIdle();
     } catch (recoveryError) {
       appendLog(
         `DFU状態の復旧に失敗しました。HubをDFUモードで接続し直してください: ${
-          recoveryError instanceof Error ? recoveryError.message : String(recoveryError)
+          recoveryError instanceof Error
+            ? recoveryError.message
+            : String(recoveryError)
         }`,
       );
     }
@@ -290,7 +413,11 @@ async function flashFirmware() {
   }
 }
 
-elements.loadLatest.addEventListener("click", loadLatestFirmware);
+elements.appSelect.addEventListener("change", () => {
+  showSelectedApp();
+  void loadSelectedFirmware();
+});
+elements.loadLatest.addEventListener("click", loadSelectedFirmware);
 elements.localFile.addEventListener("change", (event) =>
   loadLocalFirmware(event.target.files[0]),
 );
@@ -321,3 +448,4 @@ if (isWebUsbAvailable()) {
 }
 
 updateControls();
+void loadCatalog();

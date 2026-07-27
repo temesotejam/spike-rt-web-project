@@ -1,108 +1,114 @@
 # SPIKE-RT Web Project
 
-公開1リポジトリで、SPIKE-RTアプリケーションの編集・コンパイル・ブラウザ書き込みを行うプロジェクトです。
+`github.dev`でSPIKE-RTアプリを編集し、GitHub Actionsでコンパイルし、GitHub PagesからSPIKE Prime HubへWebUSB DFU書き込みするための公開プロジェクトです。
 
-1. `github.dev`で`app/`を編集
-2. `main`へCommit & Push
-3. GitHub ActionsがSPIKE-RTをコンパイル
-4. `asp.bin`をArtifactとして保存
-5. `web/`と最新`asp.bin`をGitHub Pagesへ公開
-6. ChromeまたはEdgeからSPIKE Prime HubへUSB DFU書き込み
+## 現在の構成
 
-## 現在の機能
+```text
+apps/
+├─ myapp/
+├─ button/
+├─ led/
+├─ motor/
+├─ led_fast/
+└─ led_countdown/
+```
 
-- SPIKE-RT `v0.2.0`を固定してビルド
-- `app/myapp.*`から`asp.bin`を生成
-- SHA-256、サイズ情報、ビルドログを生成
-- Actions Artifactとして保存
-- GitHub Pagesへ最新版を自動配置
-- Pages上で最新版またはローカル`asp.bin`を読み込み
-- WebUSBでVID `0694` / PID `0008`のDFU Hubだけを選択
-- 書き込み先を`0x08008000`に固定
-- 992 KiBを超えるファイルと範囲外書き込みを拒否
-- 必要なフラッシュセクタだけを消去
-- DfuSeで書き込み
-- 全バイトをUSB DFUで読み戻して照合
-- 検証成功後にHubの再起動を要求
+1回のWorkflowでSPIKE-RTカーネルを1回だけコンパイルし、そのカーネルを共用して`apps/`以下の全アプリを順番にビルドします。生成されたファームウェアはアプリ名別にPagesへ保存され、Web画面の選択欄から読み込めます。
 
-## 実機検証状況
+## 収録アプリ
 
-GitHub Actionsによるコンパイル、`asp.bin`生成、Pagesへのデプロイ、Pages上でのSHA-256確認までは動作確認済みです。
+| ID | 内容 | 出典 |
+|---|---|---|
+| `myapp` | 起動ログ後に待機する最小アプリ | このリポジトリ |
+| `button` | Hubボタン入力をUSBシリアルログへ表示 | SPIKE-RT v0.2.0公式 |
+| `led` | a〜zを5×5表示へ順番に表示 | SPIKE-RT v0.2.0公式 |
+| `motor` | ポートAのモーターを回転・停止 | SPIKE-RT v0.2.0公式 |
+| `led_fast` | 0〜9を0.25秒ごとに表示 | 公式LED例から派生 |
+| `led_countdown` | 9〜0を1秒ごとに表示 | 公式LED例から派生 |
 
-WebUSBによるHub接続・消去・書き込み・読み戻し検証・再起動は実装済みですが、このリポジトリではまだSPIKE Prime Hub実機による最終確認を行っていません。最初の試験では、復元手段を確保したHubと既知の正常な`asp.bin`を使用してください。
+`motor`は実機でモーターが自動的に動くため、Web画面にも警告を表示します。
 
-## 対応環境
+## 編集から書き込みまで
 
-- HTTPS上のGitHub Pages
-- Google ChromeまたはMicrosoft Edgeなど、WebUSB対応のChromium系ブラウザ
-- FirefoxおよびSafariはWebUSB非対応のため使用できません
+```text
+github.devでapps/<アプリID>/<アプリID>.cを編集
+→ Commit & Push
+→ GitHub Actionsがカーネル1回＋全アプリをビルド
+→ Pagesへアプリ別asp.binを配置
+→ Web画面でプログラムを選択
+→ HubへDFU書き込み
+```
 
-### Windows
+## アプリの追加
 
-DFUモードの`LEGO Technic Large Hub in DFU Mode`へ、初回のみWinUSBドライバーを割り当てる必要がある場合があります。Zadigなどを使用する際は、必ずVID `0694` / PID `0008`のHubを選択してください。
+最低限、次の2ファイルを追加します。
 
-### Linux
+```text
+apps/new_app/
+├─ new_app.c
+└─ project.json
+```
 
-一般ユーザーからUSB DFUデバイスへアクセスできるよう、VID `0694` / PID `0008`に対するudevルールが必要になる場合があります。
+フォルダ名、Cファイル名、`project.json`の`id`は同じにします。IDには英字、数字、アンダースコアを使用し、先頭は英字にしてください。
 
-## 書き込み手順
+```json
+{
+  "id": "new_app",
+  "name": "New App",
+  "description": "画面に表示する説明",
+  "warning": "",
+  "origin": "自作"
+}
+```
 
-1. Pagesで「最新版を読み込む」を押す
-2. Hubの電源を切りUSBを抜く
-3. Bluetoothボタンを押したままUSBを接続する
-4. 赤・緑・青に繰り返し点滅したらボタンを離す
-5. 「Hubに接続」を押し、`LEGO Technic Large Hub in DFU Mode`を選ぶ
-6. 安全確認へチェックする
-7. 「書き込み開始」を押す
-8. 消去、書き込み、読み戻し検証、再起動が完了するまでUSBを抜かない
+`new_app.h`、`new_app.cfg`、`new_app.cdl`が無い場合、Workflowが標準構成を一時生成します。タスク構成を変更したい場合は、同名のファイルをアプリフォルダへ追加すると自動生成より優先されます。
 
-## リポジトリ設定
+## ビルド結果
 
-### GitHub Pages
+Pagesには次のように配置されます。
 
-1. `Settings`
-2. `Pages`
-3. `Build and deployment`
-4. `Source`を`GitHub Actions`に設定
+```text
+firmware/
+├─ catalog.json
+├─ myapp/
+│  ├─ asp.bin
+│  ├─ manifest.json
+│  ├─ asp.bin.sha256
+│  ├─ size.txt
+│  └─ build.log
+└─ ...
+```
 
-### GitHub Actions
+`catalog.json`からWeb画面が利用可能なアプリを自動検出します。アプリ追加時にWeb側の選択肢を手作業で更新する必要はありません。
 
-`Settings` → `Actions` → `General` → `Workflow permissions`で、読み取り権限を基本にしてください。
+## WebUSB書き込み
 
-このWorkflowは、ビルドジョブでは`contents: read`だけを使用し、デプロイジョブだけに`pages: write`と`id-token: write`を与えます。
+- 対象: LEGO SPIKE Prime Hub DFUモード
+- USB VID: `0x0694`
+- USB PID: `0x0008`
+- 書き込み先: `0x08008000`
+- 最大サイズ: 992 KiB
+- 処理: 必要セクタ消去 → 分割書き込み → 全バイト読み戻し検証 → 再起動
+
+WebUSB部分は実装済みで模擬DFUテストまで実施していますが、実機による最終確認はまだです。
+
+## GitHub Pages設定
+
+`Settings` → `Pages` → `Build and deployment` → `Source`を`GitHub Actions`に設定します。
 
 ## SPIKE-RT公式リポジトリへの安全対策
 
-- SPIKE-RTは固定タグから読み取るだけ
+- SPIKE-RTは`v0.2.0`を一時チェックアウト
 - `persist-credentials: false`
 - SPIKE-RTのPush URLを`DISABLED`へ変更
 - PAT、SSH秘密鍵、Deploy Keyを使用しない
-- `GITHUB_TOKEN`はこのリポジトリに限定
+- ビルドジョブの権限は`contents: read`
+- Pagesデプロイジョブだけに`pages: write`と`id-token: write`
 - SPIKE-RT側へPushする処理を持たない
 
-GitHub Actions内で変更される`spike-rt/`は一時コピーで、ジョブ終了時に削除されます。
+Actions内のSPIKE-RTコピーと自動生成したヘッダー・設定ファイルは、ジョブ終了時に削除されます。
 
-## アプリ名を変更する場合
+## ライセンス
 
-`.github/workflows/build-and-deploy.yml`の`APP_NAME`を変更し、ファイル名も合わせます。
-
-```text
-app/
-├─ 新しい名前.c
-├─ 新しい名前.h
-└─ 新しい名前.cfg
-```
-
-SPIKE-RT `v0.2.0`ではアプリ名と同名のCDLファイルも必要です。現在のWorkflowは公式`motor.cdl`をActions内だけで一時コピーしています。
-
-## ローカル開発環境
-
-必須ではありません。
-
-- 編集: `github.dev`
-- コンパイル: GitHub Actions
-- 配布・書き込み: GitHub Pages
-
-## 第三者コード
-
-USB DFU / DfuSe実装は、Devan Lai氏の`devanlai/webdfu`を参照して再構成しています。ライセンス表記は[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)を参照してください。
+このリポジトリのライセンスは`LICENSE`を、使用・派生した第三者コードについては`THIRD_PARTY_NOTICES.md`を参照してください。

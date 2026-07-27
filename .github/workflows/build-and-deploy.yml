@@ -1,13 +1,14 @@
-name: Build SPIKE-RT and deploy Pages
+name: Build all SPIKE-RT apps and deploy Pages
 
 on:
   push:
     branches:
       - main
     paths:
-      - "app/**"
+      - "apps/**"
       - "web/**"
       - ".github/workflows/build-and-deploy.yml"
+      - "README.md"
   workflow_dispatch:
 
 permissions:
@@ -18,15 +19,15 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  APP_NAME: myapp
-  APP_DIR: user_app
   SPIKE_RT_REF: v0.2.0
   SPIKE_RT_IMAGE: spike-rt-builder:v0.2.0-slim
+  APPS_ROOT: apps
+  SPIKE_RT_APPS_DIR: user_apps
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 45
 
     permissions:
       contents: read
@@ -53,18 +54,68 @@ jobs:
           git -C spike-rt remote set-url --push origin DISABLED
           git -C spike-rt remote -v
 
-      - name: Copy application into SPIKE-RT tree
+      - name: Validate and copy applications
         shell: bash
         run: |
           set -euxo pipefail
-          rm -rf "spike-rt/${APP_DIR}"
-          mkdir -p "spike-rt/${APP_DIR}"
-          cp -a app/. "spike-rt/${APP_DIR}/"
 
-          # SPIKE-RT v0.2.0はアプリ名と同名のCDLを要求する。
-          # 公式motorサンプルの汎用的なTECS構成を一時コピーとして利用する。
-          cp spike-rt/sample/motor/motor.cdl \
-             "spike-rt/${APP_DIR}/${APP_NAME}.cdl"
+          rm -rf "spike-rt/${SPIKE_RT_APPS_DIR}"
+          mkdir -p "spike-rt/${SPIKE_RT_APPS_DIR}"
+
+          mapfile -t APPS < <(
+            find "${APPS_ROOT}" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' |
+              LC_ALL=C sort
+          )
+          test "${#APPS[@]}" -gt 0
+
+          : > spike-rt/app-list.txt
+          for APP in "${APPS[@]}"; do
+            [[ "${APP}" =~ ^[A-Za-z][A-Za-z0-9_]*$ ]]
+            test -f "${APPS_ROOT}/${APP}/${APP}.c"
+            test -f "${APPS_ROOT}/${APP}/project.json"
+            python3 -m json.tool "${APPS_ROOT}/${APP}/project.json" >/dev/null
+
+            TARGET_DIR="spike-rt/${SPIKE_RT_APPS_DIR}/${APP}"
+            mkdir -p "${TARGET_DIR}"
+            cp -a "${APPS_ROOT}/${APP}/." "${TARGET_DIR}/"
+
+            # h/cfg/cdlはアプリ側で上書き可能。無ければ標準構成を生成する。
+            if [[ ! -f "${TARGET_DIR}/${APP}.h" ]]; then
+              HEADER_GUARD="$(printf '%s_H' "${APP}" |
+                tr '[:lower:]' '[:upper:]' |
+                tr -c 'A-Z0-9_' '_')"
+              printf '%s\n' \
+                "#ifndef ${HEADER_GUARD}" \
+                "#define ${HEADER_GUARD}" \
+                "#include <kernel.h>" \
+                "#define MAIN_PRIORITY 5" \
+                "#define MAIN_STACK_SIZE 4096" \
+                "#define STACK_SIZE MAIN_STACK_SIZE" \
+                "#ifndef TOPPERS_MACRO_ONLY" \
+                "extern void main_task(intptr_t exinf);" \
+                "#endif" \
+                "#endif" \
+                > "${TARGET_DIR}/${APP}.h"
+            fi
+
+            if [[ ! -f "${TARGET_DIR}/${APP}.cfg" ]]; then
+              printf '%s\n' \
+                'INCLUDE("tecsgen.cfg");' \
+                "#include \"${APP}.h\"" \
+                'CRE_TSK(APP_MAIN_TASK, { TA_ACT, 0, main_task, MAIN_PRIORITY, MAIN_STACK_SIZE, NULL });' \
+                > "${TARGET_DIR}/${APP}.cfg"
+            fi
+
+            if [[ ! -f "${TARGET_DIR}/${APP}.cdl" ]]; then
+              cp spike-rt/sample/motor/motor.cdl \
+                "${TARGET_DIR}/${APP}.cdl"
+            fi
+
+            printf '%s\n' "${APP}" >> spike-rt/app-list.txt
+          done
+
+          echo "Applications:"
+          cat spike-rt/app-list.txt
 
       - name: Patch pinned builder Dockerfile dependencies
         shell: bash
@@ -72,7 +123,6 @@ jobs:
           set -euxo pipefail
           DOCKERFILE="spike-rt/tools/docker/slim.dockerfile"
 
-          # v0.2.0のDockerfileには.tar.bz2展開用のbzip2が不足している。
           sed -i \
             's/curl make libncurses5 python3 git/curl bzip2 make libncurses5 python3 git/' \
             "${DOCKERFILE}"
@@ -89,32 +139,28 @@ jobs:
             --tag "${SPIKE_RT_IMAGE}" \
             spike-rt/tools/docker
 
-      - name: Build firmware
+      - name: Build kernel and all applications
         shell: bash
         run: |
           set -o pipefail
 
           docker run --rm \
-            -e APP_NAME="${APP_NAME}" \
-            -e APP_DIR="${APP_DIR}" \
+            -e SPIKE_RT_APPS_DIR="${SPIKE_RT_APPS_DIR}" \
             -v "${GITHUB_WORKSPACE}/spike-rt:/work" \
             -w /work \
             "${SPIKE_RT_IMAGE}" \
             bash -c '
               set -euxo pipefail
 
-              # ログインシェルによるPATH上書きを避け、ツールチェーンを明示する。
               export PATH="/usr/local/gcc-arm-none-eabi/bin:${PATH}"
               command -v arm-none-eabi-gcc
               arm-none-eabi-gcc --version
               command -v arm-none-eabi-size
-
               git config --global --add safe.directory "*"
 
               echo "=== Configure kernel ==="
               mkdir -p build/obj-primehub_kernel
               cd build/obj-primehub_kernel
-
               ../../asp3/configure.rb \
                 -T primehub_gcc \
                 -f \
@@ -124,33 +170,44 @@ jobs:
               make -j2 libkernel.a
               cd ../..
 
-              echo "=== Configure application ==="
-              mkdir -p "build/obj-primehub_${APP_NAME}"
-              cd "build/obj-primehub_${APP_NAME}"
+              mkdir -p build/app-logs
 
-              ../../asp3/configure.rb \
-                -T primehub_gcc \
-                -L ../obj-primehub_kernel \
-                -a "../../${APP_DIR}/" \
-                -A "${APP_NAME}" \
-                -m ../../common/app.mk
+              while IFS= read -r APP; do
+                test -n "${APP}"
+                echo "=== Build application: ${APP} ==="
 
-              echo "=== Build application ==="
-              rm -f asp asp.bin
-              make -j2
+                (
+                  set -euxo pipefail
+                  BUILD_DIR="build/obj-primehub_${APP}"
+                  rm -rf "${BUILD_DIR}"
+                  mkdir -p "${BUILD_DIR}"
+                  cd "${BUILD_DIR}"
 
-              echo "=== Validate output ==="
-              test -s asp.bin
-              sha256sum asp.bin > asp.bin.sha256
-              arm-none-eabi-size asp > size.txt
+                  ../../asp3/configure.rb \
+                    -T primehub_gcc \
+                    -L ../obj-primehub_kernel \
+                    -a "../../${SPIKE_RT_APPS_DIR}/${APP}/" \
+                    -A "${APP}" \
+                    -m ../../common/app.mk
+
+                  rm -f asp asp.bin asp.bin.sha256 size.txt
+                  make -j2
+
+                  test -s asp.bin
+                  sha256sum asp.bin > asp.bin.sha256
+                  arm-none-eabi-size asp > size.txt
+                ) 2>&1 | tee "build/app-logs/${APP}.log"
+              done < app-list.txt
             ' 2>&1 | tee build.log
 
-      - name: Upload diagnostic build log
+      - name: Upload diagnostic build logs
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: spike-rt-diagnostic-log-${{ github.run_number }}
-          path: build.log
+          name: spike-rt-diagnostic-logs-${{ github.run_number }}
+          path: |
+            build.log
+            spike-rt/build/app-logs/*.log
           if-no-files-found: warn
           retention-days: 14
 
@@ -162,55 +219,108 @@ jobs:
           rm -rf site
           mkdir -p site/firmware
           cp -a web/. site/
-
-          BUILD_DIR="spike-rt/build/obj-primehub_${APP_NAME}"
-          cp "${BUILD_DIR}/asp.bin" site/firmware/asp.bin
-          cp "${BUILD_DIR}/asp.bin.sha256" site/firmware/asp.bin.sha256
-          cp "${BUILD_DIR}/size.txt" site/firmware/size.txt
           cp build.log site/firmware/build.log
 
-          export FIRMWARE_SHA256
-          export FIRMWARE_SIZE
           export BUILT_AT
-          FIRMWARE_SHA256="$(cut -d ' ' -f 1 "${BUILD_DIR}/asp.bin.sha256")"
-          FIRMWARE_SIZE="$(stat -c '%s' "${BUILD_DIR}/asp.bin")"
           BUILT_AT="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 
           python3 - <<'PY'
+          import hashlib
           import json
           import os
+          import shutil
           from pathlib import Path
 
-          manifest = {
-              "file": "asp.bin",
-              "loadAddress": "0x08008000",
-              "maxBytes": 992 * 1024,
-              "size": int(os.environ["FIRMWARE_SIZE"]),
-              "sha256": os.environ["FIRMWARE_SHA256"],
+          apps_root = Path(os.environ["APPS_ROOT"])
+          build_root = Path("spike-rt/build")
+          site_root = Path("site/firmware")
+          app_ids = [
+              line.strip()
+              for line in Path("spike-rt/app-list.txt").read_text(encoding="utf-8").splitlines()
+              if line.strip()
+          ]
+
+          catalog_apps = []
+          for app_id in app_ids:
+              metadata_path = apps_root / app_id / "project.json"
+              metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+              if metadata.get("id") != app_id:
+                  raise SystemExit(f"{metadata_path}: id must be {app_id!r}")
+
+              build_dir = build_root / f"obj-primehub_{app_id}"
+              firmware_path = build_dir / "asp.bin"
+              if not firmware_path.is_file() or firmware_path.stat().st_size == 0:
+                  raise SystemExit(f"Missing firmware: {firmware_path}")
+
+              output_dir = site_root / app_id
+              output_dir.mkdir(parents=True, exist_ok=True)
+
+              shutil.copy2(firmware_path, output_dir / "asp.bin")
+              shutil.copy2(build_dir / "asp.bin.sha256", output_dir / "asp.bin.sha256")
+              shutil.copy2(build_dir / "size.txt", output_dir / "size.txt")
+              shutil.copy2(build_root / "app-logs" / f"{app_id}.log", output_dir / "build.log")
+
+              firmware_bytes = firmware_path.read_bytes()
+              sha256 = hashlib.sha256(firmware_bytes).hexdigest()
+              size = len(firmware_bytes)
+
+              manifest = {
+                  "appId": app_id,
+                  "appName": metadata.get("name", app_id),
+                  "description": metadata.get("description", ""),
+                  "warning": metadata.get("warning", ""),
+                  "origin": metadata.get("origin", ""),
+                  "file": "asp.bin",
+                  "loadAddress": "0x08008000",
+                  "maxBytes": 992 * 1024,
+                  "size": size,
+                  "sha256": sha256,
+                  "sourceCommit": os.environ["GITHUB_SHA"],
+                  "sourcePath": f"apps/{app_id}",
+                  "spikeRtCommit": os.environ["SPIKE_RT_REF"],
+                  "runNumber": os.environ["GITHUB_RUN_NUMBER"],
+                  "runId": os.environ["GITHUB_RUN_ID"],
+                  "builtAt": os.environ["BUILT_AT"],
+                  "repository": os.environ["GITHUB_REPOSITORY"],
+              }
+
+              (output_dir / "manifest.json").write_text(
+                  json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+                  encoding="utf-8",
+              )
+
+              catalog_apps.append(
+                  {
+                      "id": app_id,
+                      "name": manifest["appName"],
+                      "description": manifest["description"],
+                      "warning": manifest["warning"],
+                      "origin": manifest["origin"],
+                      "size": size,
+                      "sha256": sha256,
+                      "manifest": f"{app_id}/manifest.json",
+                  }
+              )
+
+          catalog = {
+              "defaultApp": "myapp" if "myapp" in app_ids else app_ids[0],
+              "count": len(catalog_apps),
               "sourceCommit": os.environ["GITHUB_SHA"],
               "spikeRtCommit": os.environ["SPIKE_RT_REF"],
-              "runNumber": os.environ["GITHUB_RUN_NUMBER"],
-              "runId": os.environ["GITHUB_RUN_ID"],
               "builtAt": os.environ["BUILT_AT"],
-              "repository": os.environ["GITHUB_REPOSITORY"],
+              "apps": catalog_apps,
           }
-
-          Path("site/firmware/manifest.json").write_text(
-              json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+          (site_root / "catalog.json").write_text(
+              json.dumps(catalog, ensure_ascii=False, indent=2) + "\n",
               encoding="utf-8",
           )
           PY
 
-      - name: Upload firmware artifact
+      - name: Upload all firmware artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: spike-rt-firmware-${{ github.run_number }}
-          path: |
-            site/firmware/asp.bin
-            site/firmware/asp.bin.sha256
-            site/firmware/size.txt
-            site/firmware/manifest.json
-            site/firmware/build.log
+          name: spike-rt-firmware-all-${{ github.run_number }}
+          path: site/firmware
           if-no-files-found: error
           retention-days: 14
           compression-level: 0
