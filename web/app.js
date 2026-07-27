@@ -105,3 +105,5 @@ elements.localFile.addEventListener("change", (event) => loadLocalFirmware(event
 elements.download.addEventListener("click", downloadFirmware);
 
 if (!window.isSecureContext) appendLog("HTTPSではないため、将来WebUSBを利用できません。");
+
+// GitHub Pagesを有効化した後の初回デプロイを起動するための変更です。
