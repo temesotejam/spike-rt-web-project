@@ -59,6 +59,15 @@ jobs:
           mkdir -p spike-rt/${APP_DIR}
           cp -a app/. spike-rt/${APP_DIR}/
 
+      - name: Patch pinned builder Dockerfile dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          DOCKERFILE="spike-rt/tools/docker/slim.dockerfile"
+          grep -q "curl build-essential" "${DOCKERFILE}"
+          sed -i 's/curl build-essential/curl bzip2 build-essential/' "${DOCKERFILE}"
+          grep -n "apt install" -A5 "${DOCKERFILE}"
+
       - name: Build pinned SPIKE-RT builder image
         shell: bash
         run: |
