@@ -100,8 +100,15 @@ jobs:
             -v "${GITHUB_WORKSPACE}/spike-rt:/work" \
             -w /work \
             "${SPIKE_RT_IMAGE}" \
-            bash -lc '
+            bash -c '
               set -euxo pipefail
+
+              # ログインシェルによるPATH上書きを避け、ツールチェーンを明示する。
+              export PATH="/usr/local/gcc-arm-none-eabi/bin:${PATH}"
+              command -v arm-none-eabi-gcc
+              arm-none-eabi-gcc --version
+              command -v arm-none-eabi-size
+
               git config --global --add safe.directory "*"
 
               echo "=== Configure kernel ==="
