@@ -20,8 +20,8 @@ concurrency:
 env:
   APP_NAME: myapp
   APP_DIR: user_app
-  SPIKE_RT_REF: 62a2824e4b513aaf65fde4670ccbc5620e1733a6
-  SPIKE_RT_IMAGE: ghcr.io/spike-rt/spike-rt:rich
+  SPIKE_RT_REF: v0.2.0
+  SPIKE_RT_IMAGE: ghcr.io/spike-rt/spike-rt:v0.2.0-rich
 
 jobs:
   build:
@@ -43,7 +43,7 @@ jobs:
           repository: spike-rt/spike-rt
           ref: ${{ env.SPIKE_RT_REF }}
           path: spike-rt
-          submodules: recursive
+          submodules: true
           persist-credentials: false
 
       - name: Disable push to SPIKE-RT remote
@@ -75,7 +75,6 @@ jobs:
             bash -lc '
               set -euxo pipefail
 
-              # GitHub Actionsのマウント先をGitの安全な作業場所として許可する。
               git config --global --add safe.directory "*"
 
               echo "=== Configure kernel ==="
