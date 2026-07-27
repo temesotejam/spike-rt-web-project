@@ -55,9 +55,12 @@ jobs:
       - name: Copy application into SPIKE-RT tree
         shell: bash
         run: |
+          set -euxo pipefail
           rm -rf spike-rt/${APP_DIR}
           mkdir -p spike-rt/${APP_DIR}
           cp -a app/. spike-rt/${APP_DIR}/
+          cp spike-rt/sample/motor/motor.cdl \
+             "spike-rt/${APP_DIR}/${APP_NAME}.cdl"
 
       - name: Patch pinned builder Dockerfile dependencies
         shell: bash
