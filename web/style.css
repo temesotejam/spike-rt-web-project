@@ -1,0 +1,25 @@
+:root {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  line-height: 1.55;
+  color: CanvasText;
+  background: Canvas;
+}
+* { box-sizing: border-box; }
+body { margin: 0; }
+.container { width: min(900px, calc(100% - 32px)); margin: 0 auto; padding: 48px 0 72px; }
+header { margin-bottom: 28px; }
+h1, h2, p { margin-top: 0; }
+.eyebrow { margin-bottom: 6px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; }
+.card { margin: 20px 0; padding: 24px; border: 1px solid color-mix(in srgb, CanvasText 20%, transparent); border-radius: 16px; }
+.actions { display: flex; flex-wrap: wrap; gap: 12px; margin: 18px 0; }
+button, .file-button { appearance: none; border: 1px solid color-mix(in srgb, CanvasText 35%, transparent); border-radius: 10px; padding: 10px 14px; background: Canvas; color: CanvasText; font: inherit; cursor: pointer; }
+button:disabled { cursor: not-allowed; opacity: 0.5; }
+.file-button input { display: none; }
+.metadata { display: grid; gap: 0; margin: 18px 0; border-top: 1px solid color-mix(in srgb, CanvasText 15%, transparent); }
+.metadata div { display: grid; grid-template-columns: minmax(140px, 0.32fr) 1fr; gap: 14px; padding: 10px 0; border-bottom: 1px solid color-mix(in srgb, CanvasText 15%, transparent); }
+dt { font-weight: 700; }
+dd { margin: 0; overflow-wrap: anywhere; }
+.notice { padding: 12px 14px; border-left: 4px solid currentColor; }
+progress { width: 100%; height: 18px; }
+pre { min-height: 110px; padding: 14px; overflow: auto; border-radius: 10px; background: color-mix(in srgb, CanvasText 8%, Canvas); }
+code { overflow-wrap: anywhere; }

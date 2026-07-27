@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>SPIKE-RT Web Project</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <main class="container">
+    <header>
+      <p class="eyebrow">SPIKE-RT</p>
+      <h1>Build &amp; Web Flasher</h1>
+      <p>GitHub Actionsで生成された最新版の<code>asp.bin</code>、または手元のバイナリを読み込みます。</p>
+    </header>
+
+    <section class="card">
+      <h2>ファームウェア</h2>
+      <div class="actions">
+        <button id="load-latest" type="button">最新版を読み込む</button>
+        <label class="file-button">
+          ローカルのasp.binを選択
+          <input id="local-file" type="file" accept=".bin,application/octet-stream">
+        </label>
+      </div>
+
+      <dl class="metadata">
+        <div><dt>状態</dt><dd id="firmware-status">未読込</dd></div>
+        <div><dt>ファイル</dt><dd id="firmware-name">—</dd></div>
+        <div><dt>サイズ</dt><dd id="firmware-size">—</dd></div>
+        <div><dt>SHA-256</dt><dd id="firmware-sha">—</dd></div>
+        <div><dt>ソースコミット</dt><dd id="source-commit">—</dd></div>
+        <div><dt>SPIKE-RTコミット</dt><dd id="spike-rt-commit">—</dd></div>
+        <div><dt>書き込み先</dt><dd id="load-address">0x08008000</dd></div>
+      </dl>
+
+      <div class="actions">
+        <button id="download" type="button" disabled>asp.binを保存</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>SPIKE Hubへの書き込み</h2>
+      <p class="notice">WebUSB書き込みは次の実装段階です。現在の初期版では、ビルド・Pages公開・バイナリ確認までを行います。</p>
+      <div class="actions">
+        <button id="connect" type="button" disabled>Hubに接続</button>
+        <button id="flash" type="button" disabled>書き込み開始</button>
+      </div>
+      <progress id="progress" max="100" value="0"></progress>
+      <pre id="log" aria-live="polite">準備完了</pre>
+    </section>
+
+    <footer><p>対象: LEGO SPIKE Prime Hub / USB DFU / 0x08008000</p></footer>
+  </main>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
