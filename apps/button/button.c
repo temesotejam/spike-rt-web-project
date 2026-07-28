@@ -4,6 +4,7 @@
  *                    Graduate School of Information Science, Nagoya Univ., JAPAN
  */
 
+
 #include <t_syslog.h>
 #include "kernel_cfg.h"
 #include "button.h"
