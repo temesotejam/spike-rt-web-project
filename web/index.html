@@ -82,7 +82,7 @@
 
     <section class="card">
       <h2>3. 書き込み</h2>
-      <p>アプリ領域<code>0x08008000</code>以外への書き込みと、992 KiBを超えるファイルはコード上で拒否します。処理はセクタ消去、書き込み、全バイトの読み戻し検証、再起動の順に行います。</p>
+      <p>アプリ領域<code>0x08008000</code>以外への書き込みと、992 KiBを超えるファイルはコード上で拒否します。処理はセクタ消去、分割書き込み、DFU状態確認、SPIKE-RT v0.2.0公式と同じブート先<code>0x08000000</code>を指定したDFU終了・再起動の順に行います。</p>
 
       <label class="confirmation">
         <input id="confirm-safety" type="checkbox">
@@ -97,7 +97,7 @@
       <progress id="progress" max="100" value="0"></progress>
       <pre id="log" aria-live="polite">準備完了</pre>
 
-      <p class="notice">このWebUSB実装はコードレビューと模擬DFUテストまで完了していますが、このリポジトリではまだ実機による最終確認を行っていません。最初の試験では復元可能なHubと既知の正常な<code>asp.bin</code>を使用してください。</p>
+      <p class="notice">WebUSB実装は実機でDFU接続、セクタ消去、ファームウェア書き込みまで確認済みです。書き込み後の全バイトUPLOAD読み戻しはSPIKE PrimeのDFUで転送エラーになったため使用せず、SPIKE-RT v0.2.0公式の書き込み手順に合わせて各転送のDFU状態を確認します。</p>
     </section>
 
     <footer>
